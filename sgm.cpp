@@ -14,6 +14,7 @@
 using namespace std;
 using namespace cv;
 using namespace Eigen;
+
 static char hamLut[256][256];
 static int directions[NUM_DIRS] = {0, -1, 1};
 
@@ -37,13 +38,14 @@ void compute_hamming_lut()
   }
 }
 
-namespace sgm 
+namespace sgm
 {
   SGM::SGM(unsigned int disparity_range, unsigned int p1, unsigned int p2, float conf_thresh, unsigned int window_height, unsigned window_width):
   disparity_range_(disparity_range), p1_(p1), p2_(p2), conf_thresh_(conf_thresh), window_height_(window_height), window_width_(window_width)
-  {
+    {
     compute_hamming_lut();
-  }
+    } 
+
 
   // set images and initialize all the desired values
   void SGM::set(const  cv::Mat &left_img, const  cv::Mat &right_img, const  cv::Mat &right_mono)
@@ -105,7 +107,7 @@ namespace sgm
         for(int c = 1; c < width_ - 1; c++, p_center++, p_census++)
         {
           uchar p_census_val = 0, m_census_val = 0, shift_count = 0;
-          for (int wr = r - 1; wr <= r + 1; wr++)
+          for (unsigned  wr = r - 1; wr <= r + 1; wr++)
           {
             for (int wc = c - 1; wc <= c + 1; wc++)
             {
@@ -128,14 +130,14 @@ namespace sgm
 
     cout <<"\nFinding Hamming Distance" <<endl;
     
-    for(int r = window_height_/2 + 1; r < height_ - window_height_/2 - 1; r++)
+    for(unsigned int r = window_height_/2 + 1; r < height_ - window_height_/2 - 1; r++)
     {
-      for(int c = window_width_/2 + 1; c < width_ - window_width_/2 - 1; c++)
+      for(unsigned int c = window_width_/2 + 1; c < width_ - window_width_/2 - 1; c++)
       {
-        for(int d=0; d<disparity_range_; d++)
+        for(unsigned int d=0; d<disparity_range_; d++)
         {
           long cost = 0;
-          for(int wr = r - window_height_/2; wr <= r + window_height_/2; wr++)
+          for(unsigned int wr = r - window_height_/2; wr <= r + window_height_/2; wr++)
           {
             uchar *p_left = census_img[0].ptr<uchar>(wr),
                   *p_right = census_img[1].ptr<uchar>(wr);
@@ -233,7 +235,6 @@ namespace sgm
     /////////////////////////////////////////////////////////////////////////////////////////
   }
 
-  
   void SGM::aggregation()
   {
     
@@ -276,6 +277,7 @@ namespace sgm
     {
       for (int col = 0; col < width_; ++col)
       {
+
         for(int path = 0; path < PATHS_PER_SCAN; path++)
         {
           unsigned long min_on_path = path_cost_[path][row][col][0];
@@ -292,6 +294,8 @@ namespace sgm
 
           }
           inv_confidence_[row][col] += (min_on_path - alpha * cost_[row][col][disp]);
+          
+          
 
         }
       }
@@ -300,71 +304,65 @@ namespace sgm
   }
 
 
-  void SGM::compute_disparity()
-  {
-      calculate_cost_hamming();
-      aggregation();
-      disp_ = Mat(Size(width_, height_), CV_8UC1, Scalar::all(0));
-      int n_valid = 0;
-      for (int row = 0; row < height_; ++row)
-      {
-          for (int col = 0; col < width_; ++col)
-          {
-              unsigned long smallest_cost = aggr_cost_[row][col][0];
-              int smallest_disparity = 0;
-              for(int d=disparity_range_-1; d>=0; --d)
-              {
+void SGM::compute_disparity()
+{
+    calculate_cost_hamming();
+    aggregation();
+    disp_ = Mat(Size(width_, height_), CV_8UC1, Scalar::all(0));
 
-                  if(aggr_cost_[row][col][d]<smallest_cost)
-                  {
-                      smallest_cost = aggr_cost_[row][col][d];
-                      smallest_disparity = d; 
+    std::vector<float> sgmd, monod;  // Vectors to store high-confidence SGM and monocular disparities
 
-                  }
-              }
-              inv_confidence_[row][col] = smallest_cost - inv_confidence_[row][col];
+    for (int row = 0; row < height_; ++row) {
+        for (int col = 0; col < width_; ++col) {
+            unsigned long smallest_cost = aggr_cost_[row][col][0];
+            int smallest_disparity = 0;
 
-              // If the following condition is true, the disparity at position (row, col) has a good confidence
-              if (inv_confidence_[row][col] > 0 && inv_confidence_[row][col] <conf_thresh_)
-              {
-                //////////////////////////// Code to be completed (3/4) /////////////////////////////////
-                // Since the disparity at position (row, col) has a good confidence, it can be added 
-                // togheter with the corresponding unscaled disparity from the right-to-left initial 
-                // guess mono_.at<uchar>(row, col) to the pool of disparity pairs that will be used 
-                // to estimate the unknown scale factor.    
-                /////////////////////////////////////////////////////////////////////////////////////////
+            for(int d = 1; d < disparity_range_; ++d) {
+                if(aggr_cost_[row][col][d] < smallest_cost) {
+                    smallest_cost = aggr_cost_[row][col][d];
+                    smallest_disparity = d;
+                }
+            }
 
-                
-                
-                
-                
-                
-                
-                /////////////////////////////////////////////////////////////////////////////////////////
-              }
+            // Inverse confidence might not be the most intuitive name as it's directly used as confidence in the condition below
+            float confidence = smallest_cost - inv_confidence_[row][col];
 
-              disp_.at<uchar>(row, col) = smallest_disparity*255.0/disparity_range_;
+            // Collect high-confidence disparities
+            if (confidence > 0 && confidence < conf_thresh_) {
+                sgmd.push_back(smallest_disparity);
+                monod.push_back(mono_.at<uchar>(row, col));
+            }
 
-          }
-      }
+            disp_.at<uchar>(row, col) = static_cast<uchar>(smallest_disparity * 255 / disparity_range_);
+        }
+    }
 
-      //////////////////////////// Code to be completed (4/4) /////////////////////////////////
-      // Using all the disparity pairs accumulated in the previous step, 
-      // estimate the unknown scaling factor and scale the initial guess disparities 
-      // accordingly. Finally,  and use them to improve/replace the low-confidence SGM 
-      // disparities.
-      /////////////////////////////////////////////////////////////////////////////////////////
+    // Estimate the scale factor and offset using linear regression
+    if (!sgmd.empty()) {
+        MatrixXf A(sgmd.size(), 2);
+        VectorXf b(sgmd.size());
+        for (size_t i = 0; i < sgmd.size(); ++i) {
+            A(i, 0) = monod[i]; // Monocular disparity
+            A(i, 1) = 1;        // Bias term
+            b(i) = sgmd[i];     // SGM disparity
+        }
 
-      
-      
-      
-      
-      
-      
-      
-      /////////////////////////////////////////////////////////////////////////////////////////
+        // Solving for h and k in the least squares sense: Ax = b, where x = [h, k]
+        VectorXf x = (A.transpose() * A).ldlt().solve(A.transpose() * b);
+        float h = x(0);  // Scale factor
+        float k = x(1);  // Offset
 
-  }
+        // Refine the disparity map using the estimated scale and offset
+        for (int row = 0; row < height_; ++row) {
+            for (int col = 0; col < width_; ++col) {
+                if (inv_confidence_[row][col] >= conf_thresh_ || inv_confidence_[row][col] <= 0) {
+                    float scaled_disparity = h * mono_.at<uchar>(row, col) + k;
+                    disp_.at<uchar>(row, col) = std::min(std::max(static_cast<int>(scaled_disparity * 255.0 / disparity_range_), 0), 255);
+                }
+            }
+        }
+    }
+}
 
   float SGM::compute_mse(const cv::Mat &gt)
   {
@@ -395,4 +393,4 @@ namespace sgm
   
 
 }
-
+}
